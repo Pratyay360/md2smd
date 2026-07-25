@@ -1,0 +1,8 @@
+[tools]
+"github:kristoff-it/superhtml" = "latest"
+"github:kristoff-it/ziggy" = "latest"
+"github:kristoff-it/zine" = "latest"
+go = "latest"
+"go:github.com/spf13/cobra-cli" = "latest"
+golangci-lint = "latest"
+just = "latest"
