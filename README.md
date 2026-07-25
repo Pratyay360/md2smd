@@ -14,6 +14,10 @@ if you are facing any issues
      kindly raise a pr ...:)
 ```
 
+# demo video for reference.
+
+[![asciicast](https://asciinema.org/a/raWocUFrFrJbc5vV.svg)](https://asciinema.org/a/raWocUFrFrJbc5vV)
+
 ## knowledgebase
 
 [supermd](https://raw.githubusercontent.com/kristoff-it/zine-ssg.io/refs/heads/main/content/docs/supermd/index.smd)
