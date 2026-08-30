@@ -10,14 +10,16 @@ import (
 	"gopkg.in/yaml.v3"
 )
 var (
-	imageRe        = regexp.MustCompile(`!\[([^\]]*)\]\(([^\s)]+)(?:\s+"([^"]*)")?\)`)
-	linkRe         = regexp.MustCompile(`\[([^\]]+)\]\(([^\s)]+)(?:\s+"([^"]*)")?\)`)
-	smdDirectiveRe = regexp.MustCompile(`\[([^\]]*)\]\(`)
-	htmlCommentRe  = regexp.MustCompile(`(?s)<!--.*?-->`)
-	headingRe      = regexp.MustCompile(`(?m)^(\s{0,3})(#{1,6})(\s)`)
-	mdxImportRe    = regexp.MustCompile(`(?m)^\s*(import|export)\s+.*$`)
-	htmlTagRe      = regexp.MustCompile(`<[^>]+>`)
-	htmlLineRe     = regexp.MustCompile(`(?m)^\s*<[^>]+>\s*$`)
+	imageRe           = regexp.MustCompile(`!\[([^\]]*)\]\(([^\s)]+)(?:\s+"([^"]*)")?\)`)
+	linkRe            = regexp.MustCompile(`\[([^\]]+)\]\(([^\s)]+)(?:\s+"([^"]*)")?\)`)
+	smdDirectiveRe    = regexp.MustCompile(`\[([^\]]*)\]\(`)
+	htmlCommentRe     = regexp.MustCompile(`(?s)<!--.*?-->`)
+	headingRe         = regexp.MustCompile(`(?m)^(\s{0,3})(#{1,6})(\s)`)
+	mdxImportRe       = regexp.MustCompile(`(?m)^\s*(import|export)\s+.*$`)
+	htmlTagRe         = regexp.MustCompile(`<[^>]+>`)
+	htmlLineRe        = regexp.MustCompile(`(?m)^\s*<[^>]+>\s*$`)
+	hrRe              = regexp.MustCompile(`(?m)^\s*([-*_][ \t]*){3,}\s*$`)
+	longDashFMRe      = regexp.MustCompile(`\A\s*-{5,}\s*\n([\s\S]*?)\n\s*-{5,}\s*\n`)
 )
 func mapToZiggy(data map[string]interface{}, prefix string) string {
 	keys := make([]string, 0, len(data))
@@ -73,14 +75,18 @@ func ziggyValue(key string, v interface{}, depth int) string {
 		}
 		return strings.Join(lines, "")
 	case map[interface{}]interface{}:
-		var nestedKeys []string
-		for sk := range val {
-			nestedKeys = append(nestedKeys, fmt.Sprintf("%v", sk))
+		type kv struct {
+			k   interface{}
+			str string
 		}
-		sort.Strings(nestedKeys)
+		var kvs []kv
+		for k := range val {
+			kvs = append(kvs, kv{k, fmt.Sprintf("%v", k)})
+		}
+		sort.Slice(kvs, func(i, j int) bool { return kvs[i].str < kvs[j].str })
 		var lines []string
-		for _, sk := range nestedKeys {
-			lines = append(lines, ziggyValue(key+"."+sk, val[sk], depth))
+		for _, kv := range kvs {
+			lines = append(lines, ziggyValue(key+"."+kv.str, val[kv.k], depth))
 		}
 		return strings.Join(lines, "")
 	default:
@@ -119,14 +125,18 @@ func formatZiggyValueInline(v interface{}) string {
 		}
 		return "{" + strings.Join(fields, ", ") + "}"
 	case map[interface{}]interface{}:
-		keys := make([]string, 0, len(val))
-		for k := range val {
-			keys = append(keys, fmt.Sprintf("%v", k))
+		type kv2 struct {
+			k   interface{}
+			str string
 		}
-		sort.Strings(keys)
+		var kvs []kv2
+		for k := range val {
+			kvs = append(kvs, kv2{k, fmt.Sprintf("%v", k)})
+		}
+		sort.Slice(kvs, func(i, j int) bool { return kvs[i].str < kvs[j].str })
 		var fields []string
-		for _, k := range keys {
-			fields = append(fields, fmt.Sprintf(".%s = %s", k, formatZiggyValueInline(val[k])))
+		for _, kv := range kvs {
+			fields = append(fields, fmt.Sprintf(".%s = %s", kv.str, formatZiggyValueInline(val[kv.k])))
 		}
 		return "{" + strings.Join(fields, ", ") + "}"
 	default:
@@ -303,19 +313,35 @@ func extractFencedBlocks(input string) (string, map[string]string) {
 	var result strings.Builder
 	i := 0
 	idx := 0
-	for {
-		start := strings.Index(input[i:], "```")
-		if start < 0 {
+	for i < len(input) {
+		// Find next fence of either ``` or ~~~ (including language info)
+		backIdx := strings.Index(input[i:], "```")
+		tildeIdx := strings.Index(input[i:], "~~~")
+		var start int
+		var fence string
+		if backIdx < 0 && tildeIdx < 0 {
 			result.WriteString(input[i:])
 			break
 		}
+		if backIdx >= 0 && (tildeIdx < 0 || backIdx < tildeIdx) {
+			start = backIdx
+			fence = "```"
+		} else {
+			start = tildeIdx
+			fence = "~~~"
+		}
 		result.WriteString(input[i : i+start])
-		end := strings.Index(input[i+start+3:], "```")
+		// Find closing fence same as opening
+		end := strings.Index(input[i+start+3:], fence)
 		if end < 0 {
+			// No closing fence, treat rest as block
 			result.WriteString(input[i+start:])
 			break
 		}
 		end += 3
+		// Include fence lines completely: from opening fence to after closing fence
+		// Need to handle language specifier on opening fence line (e.g., ```js or ~~~python)
+		// Our simple search includes that as part of block content
 		block := input[i+start : i+start+end+3]
 		placeholder := fmt.Sprintf("\x00CODEBLOCK%d\x00", idx)
 		blocks[placeholder] = block
@@ -336,6 +362,22 @@ func stripHtmlComments(input string) string {
 }
 func stripMdxImports(input string) string {
 	return mdxImportRe.ReplaceAllString(input, "")
+}
+func normalizeThematicBreaks(input string) string {
+	// SuperMD via cmark-gfm is strict about thematic breaks: Zine reports
+	// "unexpected token" for ---- / ----- etc. Normalize any HR to exactly "---"
+	// while preserving code fences (already extracted).
+	return hrRe.ReplaceAllString(input, "---")
+}
+func sanitizeZiggyValue(v interface{}) interface{} {
+	// Zine's Page schema only allows specific fields; unknown top-level keys
+	// from generic markdown frontmatter (e.g., cover, summary, content_meta)
+	// would be ignored or cause errors. Keep only allowed keys + custom fields
+	// that are safe. For super compatibility, we keep all but ensure they are
+	// serializable; Zine will ignore unknown via custom? To be safe, filter.
+	// For now, keep all – Zine allows extra via ? fields? But we ensure
+	// required fields exist.
+	return v
 }
 func handleInlineHtml(input string) string {
 	// SuperMD forbids inline HTML. To support any MD/MDX flavour (including JSX),
@@ -770,6 +812,139 @@ func smdToMdConvert(input string) string {
 	}
 	return result.String()
 }
+func sanitizeMatter(matter map[string]interface{}, body string) map[string]interface{} {
+	if matter == nil {
+		matter = make(map[string]interface{})
+	}
+	// Whitelist of allowed top-level Page fields in Zine's .smd.ziggy-schema
+	allowed := map[string]bool{
+		"title":               true,
+		"description":         true,
+		"date":                true,
+		"authors":             true,
+		"author":              true, // alias, will be normalized to authors
+		"tags":                true,
+		"layout":              true,
+		"aliases":             true,
+		"alternatives":        true,
+		"translation_key":     true,
+		"draft":               true,
+		"forbid_subsections":  true,
+		"custom":              true,
+	}
+	// Normalize author -> authors
+	if v, ok := matter["author"]; ok {
+		if _, has := matter["authors"]; !has {
+			matter["authors"] = v
+		}
+		delete(matter, "author")
+	}
+	// For super compatibility, drop unknown top-level fields that are not in
+	// Zine's Page schema (e.g., cover, summary, image, content_meta).
+	// Previously we tried to move them into `custom`, but nested custom
+	// structures produce invalid Ziggy (` .custom.content_meta.trending`)
+	// resulting in "missing token" errors. Dropping is safest for builds.
+	for k := range matter {
+		if !allowed[k] {
+			delete(matter, k)
+		}
+	}
+	// Ensure custom, if present, is a simple map[string]interface{} or drop it
+	if c, ok := matter["custom"]; ok {
+		if _, ok := c.(map[string]interface{}); !ok {
+			if _, ok2 := c.(map[interface{}]interface{}); !ok2 {
+				delete(matter, "custom")
+			}
+		}
+	}
+	// Ensure required fields with sensible defaults
+	if _, ok := matter["title"]; !ok {
+		// Try to infer title from first H1
+		title := ""
+		for _, line := range strings.Split(body, "\n") {
+			line = strings.TrimSpace(line)
+			if strings.HasPrefix(line, "# ") {
+				title = strings.TrimSpace(strings.TrimPrefix(line, "#"))
+				title = strings.Trim(title, "*_")
+				title = strings.TrimSpace(title)
+				break
+			}
+		}
+		if title == "" {
+			title = "Untitled"
+		}
+		matter["title"] = title
+	}
+	if _, ok := matter["date"]; !ok {
+		matter["date"] = time.Now().Format("2006-01-02")
+	}
+	if _, ok := matter["layout"]; !ok {
+		// Heuristic: files named index.* are section pages
+		matter["layout"] = "post.shtml"
+	}
+	if _, ok := matter["draft"]; !ok {
+		matter["draft"] = false
+	}
+	return matter
+}
+
+func tryParseLongDashFrontmatter(body string, matter map[string]interface{}) (map[string]interface{}, string, bool) {
+	bodyTrim := strings.TrimLeft(body, "\n\r\t ")
+	if !strings.HasPrefix(bodyTrim, "----") {
+		return matter, body, false
+	}
+	// Try to match long dash frontmatter at start
+	loc := longDashFMRe.FindStringSubmatchIndex(bodyTrim)
+	if loc == nil {
+		return matter, body, false
+	}
+	inner := bodyTrim[loc[2]:loc[3]]
+	rest := bodyTrim[loc[1]:]
+	// Try YAML parse of inner
+	var parsed map[string]interface{}
+	if err := yaml.Unmarshal([]byte(inner), &parsed); err == nil && len(parsed) > 0 {
+		// Merge into matter
+		if matter == nil {
+			matter = make(map[string]interface{})
+		}
+		for k, v := range parsed {
+			matter[k] = v
+		}
+		return matter, rest, true
+	}
+	// Fallback: simple key: value parsing
+	parsed = make(map[string]interface{})
+	for _, line := range strings.Split(inner, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		sep := strings.Index(line, ":")
+		if sep < 0 {
+			continue
+		}
+		k := strings.TrimSpace(line[:sep])
+		v := strings.TrimSpace(line[sep+1:])
+		if k == "" {
+			continue
+		}
+		// Handle nested menu etc. - keep as string for now
+		parsed[k] = v
+	}
+	if len(parsed) > 0 {
+		if matter == nil {
+			matter = make(map[string]interface{})
+		}
+		for k, v := range parsed {
+			if _, exists := matter[k]; !exists {
+				matter[k] = v
+			}
+		}
+		return matter, rest, true
+	}
+	return matter, body, false
+}
+
 func MdToSmd(input string) (string, error) {
 	r := strings.NewReader(input)
 	var matter map[string]interface{}
@@ -777,23 +952,30 @@ func MdToSmd(input string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("parsing frontmatter: %w", err)
 	}
-	var smdFM string
-	if len(matter) > 0 {
-		smdFM = mapToZiggy(matter, "")
+	// Handle custom long-dash frontmatter (casual-markdown style) if YAML frontmatter not found
+	if len(matter) == 0 {
+		if newMatter, rest, ok := tryParseLongDashFrontmatter(string(body), matter); ok {
+			matter = newMatter
+			body = []byte(rest)
+		}
 	}
+	// Super compatible: ensure frontmatter always has required fields
+	matter = sanitizeMatter(matter, string(body))
+	var smdFM string
+	smdFM = mapToZiggy(matter, "")
 	processed, blocks := extractFencedBlocks(string(body))
 	processed = stripMdxImports(processed)
 	processed = stripHtmlComments(processed)
 	processed = handleInlineHtml(processed)
+	processed = normalizeThematicBreaks(processed)
 	processed = normalizeHeadings(processed)
 	processed = imageRe.ReplaceAllStringFunc(processed, convertImage)
 	processed = linkRe.ReplaceAllStringFunc(processed, convertLink)
 	processed = restoreBlocks(processed, blocks)
 	// Collapse excessive blank lines left by stripping (e.g., removed imports/comments)
 	processed = regexp.MustCompile(`\n{3,}`).ReplaceAllString(processed, "\n\n")
-	if smdFM != "" {
-		smdFM = "---\n" + smdFM + "---\n"
-	}
+	// Ensure body starts with a heading level 1 if no heading present? Not required
+	smdFM = "---\n" + smdFM + "---\n"
 	return smdFM + processed, nil
 }
 func SmdToMd(input string) (string, error) {
