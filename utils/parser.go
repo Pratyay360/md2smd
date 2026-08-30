@@ -10,9 +10,14 @@ import (
 	"gopkg.in/yaml.v3"
 )
 var (
-	imageRe = regexp.MustCompile(`!\[([^\]]*)\]\(([^\s)]+)(?:\s+"([^"]*)")?\)`)
-	linkRe  = regexp.MustCompile(`\[([^\]]+)\]\(([^\s)]+)(?:\s+"([^"]*)")?\)`)
+	imageRe        = regexp.MustCompile(`!\[([^\]]*)\]\(([^\s)]+)(?:\s+"([^"]*)")?\)`)
+	linkRe         = regexp.MustCompile(`\[([^\]]+)\]\(([^\s)]+)(?:\s+"([^"]*)")?\)`)
 	smdDirectiveRe = regexp.MustCompile(`\[([^\]]*)\]\(`)
+	htmlCommentRe  = regexp.MustCompile(`(?s)<!--.*?-->`)
+	headingRe      = regexp.MustCompile(`(?m)^(\s{0,3})(#{1,6})(\s)`)
+	mdxImportRe    = regexp.MustCompile(`(?m)^\s*(import|export)\s+.*$`)
+	htmlTagRe      = regexp.MustCompile(`<[^>]+>`)
+	htmlLineRe     = regexp.MustCompile(`(?m)^\s*<[^>]+>\s*$`)
 )
 func mapToZiggy(data map[string]interface{}, prefix string) string {
 	keys := make([]string, 0, len(data))
@@ -325,6 +330,139 @@ func restoreBlocks(input string, blocks map[string]string) string {
 		input = strings.ReplaceAll(input, placeholder, block)
 	}
 	return input
+}
+func stripHtmlComments(input string) string {
+	return htmlCommentRe.ReplaceAllString(input, "")
+}
+func stripMdxImports(input string) string {
+	return mdxImportRe.ReplaceAllString(input, "")
+}
+func handleInlineHtml(input string) string {
+	// SuperMD forbids inline HTML. To support any MD/MDX flavour (including JSX),
+	// we need to make the output valid. Two strategies:
+	// - Standalone HTML/JSX block lines (e.g., <div> or <MyComponent />) -> wrap in =html code block (SuperMD escape hatch)
+	// - Inline HTML mixed with markdown text -> escape to &lt;/&gt;
+	// We handle multi-line HTML blocks by collecting consecutive HTML-tag lines
+	// and wrapping the whole block in a single =html fence to preserve structure.
+	lines := strings.Split(input, "\n")
+	var out []string
+	i := 0
+	for i < len(lines) {
+		line := lines[i]
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			out = append(out, line)
+			i++
+			continue
+		}
+		if htmlLineRe.MatchString(line) {
+			// Collect consecutive HTML-only lines (including blank lines between) as one block
+			// to handle cases like <div>\n  content\n</div> where inner content is not pure HTML
+			// but part of the block. Heuristic: gather until we find a line that is not HTML-only
+			// and not empty, or until closing tag.
+			blockLines := []string{trimmed}
+			j := i + 1
+			// If opening tag without closing on same line, collect until closing tag
+			isOpeningBlock := !strings.HasPrefix(trimmed, "</") && !strings.HasSuffix(trimmed, "/>") && strings.HasPrefix(trimmed, "<")
+			if isOpeningBlock {
+				for j < len(lines) {
+					nextTrimmed := strings.TrimSpace(lines[j])
+					if nextTrimmed == "" {
+						blockLines = append(blockLines, lines[j])
+						j++
+						continue
+					}
+					if htmlLineRe.MatchString(lines[j]) || nextTrimmed == "" {
+						blockLines = append(blockLines, nextTrimmed)
+						j++
+						// Stop at closing tag
+						if strings.HasPrefix(nextTrimmed, "</") {
+							break
+						}
+						continue
+					}
+					// Content inside block (e.g., "Block html") - include in block
+					if j == i+1 {
+						// Include one content line if directly after opening
+						blockLines = append(blockLines, lines[j])
+						j++
+						// Check if next is closing
+						if j < len(lines) && htmlLineRe.MatchString(lines[j]) {
+							blockLines = append(blockLines, strings.TrimSpace(lines[j]))
+							j++
+						}
+					}
+					break
+				}
+				// If we collected more than one line, wrap as single =html block
+				if len(blockLines) > 1 {
+					out = append(out, "```=html")
+					out = append(out, blockLines...)
+					out = append(out, "```")
+					i = j
+					continue
+				}
+			}
+			// Single HTML line -> wrap individually
+			out = append(out, "```=html")
+			out = append(out, trimmed)
+			out = append(out, "```")
+			i++
+			continue
+		}
+		if htmlTagRe.MatchString(line) {
+			line = htmlTagRe.ReplaceAllStringFunc(line, func(m string) string {
+				return strings.ReplaceAll(strings.ReplaceAll(m, "<", "&lt;"), ">", "&gt;")
+			})
+		}
+		out = append(out, line)
+		i++
+	}
+	return strings.Join(out, "\n")
+}
+func normalizeHeadings(input string) string {
+	matches := headingRe.FindAllStringSubmatch(input, -1)
+	if len(matches) == 0 {
+		return input
+	}
+	minLevel := 7
+	for _, m := range matches {
+		level := len(m[2])
+		if level < minLevel {
+			minLevel = level
+		}
+	}
+	offset := 0
+	if minLevel > 1 {
+		offset = minLevel - 1
+	}
+	lines := strings.Split(input, "\n")
+	prevLevel := 0
+	for i, line := range lines {
+		loc := headingRe.FindStringSubmatchIndex(line)
+		if loc == nil {
+			continue
+		}
+		hashes := line[loc[4]:loc[5]]
+		level := len(hashes)
+		newLevel := level - offset
+		if newLevel < 1 {
+			newLevel = 1
+		}
+		if newLevel > 6 {
+			newLevel = 6
+		}
+		if prevLevel != 0 && newLevel > prevLevel+1 {
+			newLevel = prevLevel + 1
+		}
+		if newLevel != level {
+			indent := line[loc[2]:loc[3]]
+			rest := line[loc[5]:]
+			lines[i] = indent + strings.Repeat("#", newLevel) + rest
+		}
+		prevLevel = newLevel
+	}
+	return strings.Join(lines, "\n")
 }
 func classifyImageURL(url string) string {
 	if strings.HasPrefix(url, "http://") || strings.HasPrefix(url, "https://") {
@@ -644,9 +782,15 @@ func MdToSmd(input string) (string, error) {
 		smdFM = mapToZiggy(matter, "")
 	}
 	processed, blocks := extractFencedBlocks(string(body))
+	processed = stripMdxImports(processed)
+	processed = stripHtmlComments(processed)
+	processed = handleInlineHtml(processed)
+	processed = normalizeHeadings(processed)
 	processed = imageRe.ReplaceAllStringFunc(processed, convertImage)
 	processed = linkRe.ReplaceAllStringFunc(processed, convertLink)
 	processed = restoreBlocks(processed, blocks)
+	// Collapse excessive blank lines left by stripping (e.g., removed imports/comments)
+	processed = regexp.MustCompile(`\n{3,}`).ReplaceAllString(processed, "\n\n")
 	if smdFM != "" {
 		smdFM = "---\n" + smdFM + "---\n"
 	}
