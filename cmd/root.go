@@ -53,9 +53,20 @@ func collectFiles(path string) ([]string, error) {
 	return files, err
 }
 
+var repairSmd bool
+
 func convertSingleFile(path string) error {
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		return fmt.Errorf("file not found: %s", path)
+	}
+	// Repair mode: fix heading levels + strip HTML comments in existing .smd files
+	if repairSmd && isSmdFile(path) {
+		outputPath, err := utils.RepairSmdFile(path)
+		if err != nil {
+			return fmt.Errorf("failed to repair SMD %s: %w", path, err)
+		}
+		fmt.Printf("Repaired %s\n", outputPath)
+		return nil
 	}
 	// Any .smd file -> SMD to MD, otherwise treat as markdown/MDX -> MD to SMD
 	// This allows "any type of md/mdx" regardless of extension (case-insensitive)
@@ -108,6 +119,10 @@ convertible files are processed. Extensions are matched case-insensitively.`,
 		}
 		return nil
 	},
+}
+
+func init() {
+	rootCmd.Flags().BoolVar(&repairSmd, "repair", false, "Repair existing .smd files in-place (fix heading levels, strip HTML comments)")
 }
 
 func Execute() {

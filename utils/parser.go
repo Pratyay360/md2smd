@@ -812,6 +812,26 @@ func smdToMdConvert(input string) string {
 	}
 	return result.String()
 }
+func inferTitleFromBody(body string) string {
+	for _, line := range strings.Split(body, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		// Match any heading level (#..######) as title fallback
+		loc := headingRe.FindStringSubmatchIndex(line)
+		if loc != nil {
+			title := strings.TrimSpace(line[loc[5]:])
+			title = strings.Trim(title, "*_` ")
+			if title != "" {
+				return title
+			}
+		}
+		// Also handle setext? not needed
+	}
+	return ""
+}
+
 func sanitizeMatter(matter map[string]interface{}, body string) map[string]interface{} {
 	if matter == nil {
 		matter = make(map[string]interface{})
@@ -859,17 +879,7 @@ func sanitizeMatter(matter map[string]interface{}, body string) map[string]inter
 	}
 	// Ensure required fields with sensible defaults
 	if _, ok := matter["title"]; !ok {
-		// Try to infer title from first H1
-		title := ""
-		for _, line := range strings.Split(body, "\n") {
-			line = strings.TrimSpace(line)
-			if strings.HasPrefix(line, "# ") {
-				title = strings.TrimSpace(strings.TrimPrefix(line, "#"))
-				title = strings.Trim(title, "*_")
-				title = strings.TrimSpace(title)
-				break
-			}
-		}
+		title := inferTitleFromBody(body)
 		if title == "" {
 			title = "Untitled"
 		}
@@ -950,7 +960,50 @@ func MdToSmd(input string) (string, error) {
 	var matter map[string]interface{}
 	body, err := frontmatter.Parse(r, &matter)
 	if err != nil {
-		return "", fmt.Errorf("parsing frontmatter: %w", err)
+		// Lenient fallback: treat body after frontmatter as content if YAML is malformed
+		// (e.g., unquoted colon in title like "How to Use ...: A Guide").
+		fm, _, rest := extractFrontmatter(input)
+		if fm != "" {
+			var parsed map[string]interface{}
+			if yamlErr := yaml.Unmarshal([]byte(fm), &parsed); yamlErr == nil && len(parsed) > 0 {
+				matter = parsed
+				body = []byte(rest)
+				err = nil
+			} else {
+				// Manual lenient parse: split each line on first ':' to salvage title/date
+				parsed = make(map[string]interface{})
+				for _, line := range strings.Split(fm, "\n") {
+					line = strings.TrimSpace(line)
+					if line == "" || strings.HasPrefix(line, "#") {
+						continue
+					}
+					sep := strings.Index(line, ":")
+					if sep < 0 {
+						continue
+					}
+					k := strings.TrimSpace(line[:sep])
+					v := strings.TrimSpace(line[sep+1:])
+					v = strings.Trim(v, `"'`)
+					if k != "" && v != "" {
+						parsed[k] = v
+					}
+				}
+				if len(parsed) > 0 {
+					matter = parsed
+				} else {
+					matter = make(map[string]interface{})
+				}
+				body = []byte(rest)
+				err = nil
+			}
+		} else {
+			matter = make(map[string]interface{})
+			body = []byte(input)
+			err = nil
+		}
+		if err != nil {
+			return "", fmt.Errorf("parsing frontmatter: %w", err)
+		}
 	}
 	// Handle custom long-dash frontmatter (casual-markdown style) if YAML frontmatter not found
 	if len(matter) == 0 {
@@ -971,6 +1024,11 @@ func MdToSmd(input string) (string, error) {
 	processed = normalizeHeadings(processed)
 	processed = imageRe.ReplaceAllStringFunc(processed, convertImage)
 	processed = linkRe.ReplaceAllStringFunc(processed, convertLink)
+	// Second pass: catch HTML comments that survived due to link conversion inside them
+	// or comments that were wrapped in =html but should be stripped entirely.
+	processed = stripHtmlComments(processed)
+	// Remove any remaining =html blocks that only contained a comment (now empty)
+	processed = regexp.MustCompile("(?m)^```=html\\n\\s*\\n```\\n?").ReplaceAllString(processed, "")
 	processed = restoreBlocks(processed, blocks)
 	// Collapse excessive blank lines left by stripping (e.g., removed imports/comments)
 	processed = regexp.MustCompile(`\n{3,}`).ReplaceAllString(processed, "\n\n")
@@ -978,6 +1036,35 @@ func MdToSmd(input string) (string, error) {
 	smdFM = "---\n" + smdFM + "---\n"
 	return smdFM + processed, nil
 }
+// RepairSmdContent fixes already-generated .smd files in-place: strips HTML comments
+// and normalizes heading levels so the document starts at #1 and never skips.
+func RepairSmdContent(input string) (string, error) {
+	fm, _, rest := extractFrontmatter(input)
+	processed, blocks := extractFencedBlocks(rest)
+	// Strip HTML comments (the "inline html forbidden" error)
+	processed = stripHtmlComments(processed)
+	processed = handleInlineHtml(processed)
+	processed = normalizeThematicBreaks(processed)
+	processed = normalizeHeadings(processed)
+	// Second pass strip after handling
+	processed = stripHtmlComments(processed)
+	processed = regexp.MustCompile("(?m)^```=html\\n\\s*\\n```\\n?").ReplaceAllString(processed, "")
+	processed = restoreBlocks(processed, blocks)
+	processed = regexp.MustCompile(`\n{3,}`).ReplaceAllString(processed, "\n\n")
+	if fm != "" {
+		// Preserve original ziggy frontmatter exactly (trimmed)
+		fmBlock := "---\n" + strings.Trim(fm, "\n") + "\n---\n"
+		// Ensure frontmatter ends with newline
+		if !strings.HasSuffix(fm, "\n") {
+			fmBlock = "---\n" + fm + "\n---\n"
+		}
+		// Re-trim leading newlines from body
+		processed = strings.TrimLeft(processed, "\n")
+		return fmBlock + processed, nil
+	}
+	return processed, nil
+}
+
 func SmdToMd(input string) (string, error) {
 	fm, _, rest := extractFrontmatter(input)
 	var mdFM string

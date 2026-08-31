@@ -6,6 +6,21 @@ import (
 	"strings"
 )
 
+func RepairSmdFile(inputPath string) (string, error) {
+	data, err := os.ReadFile(inputPath)
+	if err != nil {
+		return "", err
+	}
+	output, err := RepairSmdContent(string(data))
+	if err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(inputPath, []byte(output), 0644); err != nil {
+		return "", err
+	}
+	return inputPath, nil
+}
+
 func Md2Smd(inputPath string) (string, error) {
 	data, err := os.ReadFile(inputPath)
 	if err != nil {
