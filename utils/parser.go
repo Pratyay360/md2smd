@@ -10,6 +10,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 var (
+	linkedImageRe     = regexp.MustCompile(`\[!\[([^\]]*)\]\(([^\s)]+)(?:\s+"([^"]*)")?\)\]\(([^\s)]+)(?:\s+"([^"]*)")?\)`)
 	imageRe           = regexp.MustCompile(`!\[([^\]]*)\]\(([^\s)]+)(?:\s+"([^"]*)")?\)`)
 	linkRe            = regexp.MustCompile(`\[([^\]]+)\]\(([^\s)]+)(?:\s+"([^"]*)")?\)`)
 	smdDirectiveRe    = regexp.MustCompile(`\[([^\]]*)\]\(`)
@@ -20,6 +21,11 @@ var (
 	htmlLineRe        = regexp.MustCompile(`(?m)^\s*<[^>]+>\s*$`)
 	hrRe              = regexp.MustCompile(`(?m)^\s*([-*_][ \t]*){3,}\s*$`)
 	longDashFMRe      = regexp.MustCompile(`\A\s*-{5,}\s*\n([\s\S]*?)\n\s*-{5,}\s*\n`)
+	imageExprPat      = `\$image\.(?:url|asset|siteAsset|buildAsset)\("[^"]*"\)(?:\.alt\("[^"]*"\))?`
+	linkExprPat       = `\$link\.(?:url|ref|page|sub|sibling|site)(?:\("[^"]*"\))?(?:\.[a-zA-Z_]+\([^\)]*\))*`
+	smdLinkedImageRe  = regexp.MustCompile(`\[\[([^\]]*)\]\((` + `\$image\.(?:url|asset|siteAsset|buildAsset)\("[^"]*"\)(?:\.alt\("[^"]*"\))?` + `)\)\]\((` + `\$link\.(?:url|ref|page|sub|sibling|site)(?:\("[^"]*"\))?(?:\.[a-zA-Z_]+\([^\)]*\))*` + `)\)`)
+	// Legacy broken linked image where outer URL is still raw http(s)://... after a previous buggy conversion
+	smdLinkedImageLegacyRe = regexp.MustCompile(`\[\[([^\]]*)\]\((` + `\$image\.(?:url|asset|siteAsset|buildAsset)\("[^"]*"\)(?:\.alt\("[^"]*"\))?` + `)\)\]\((https?://[^\s)]+)\)`)
 )
 func mapToZiggy(data map[string]interface{}, prefix string) string {
 	keys := make([]string, 0, len(data))
@@ -530,6 +536,25 @@ func classifyLinkURL(url string) string {
 	}
 	return fmt.Sprintf("$link.sibling(%q)", url)
 }
+func convertLinkedImage(match string) string {
+	parts := linkedImageRe.FindStringSubmatch(match)
+	if parts == nil {
+		return match
+	}
+	caption := parts[1]
+	imgURL := parts[2]
+	imgAlt := parts[3]
+	linkURL := parts[4]
+	// linkTitle parts[5] ignored, no Smd equivalent for title on links yet
+	imgDirective := classifyImageURL(imgURL)
+	if imgAlt != "" {
+		imgDirective += fmt.Sprintf(".alt(%q)", imgAlt)
+	}
+	linkDirective := classifyLinkURL(linkURL)
+	// Nested: image inside link -> [[caption]($image...)]($link...)
+	return fmt.Sprintf("[[%s](%s)](%s)", caption, imgDirective, linkDirective)
+}
+
 func convertImage(match string) string {
 	parts := imageRe.FindStringSubmatch(match)
 	if parts == nil {
@@ -556,6 +581,111 @@ func convertLink(match string) string {
 	}
 	directive := classifyLinkURL(url)
 	return fmt.Sprintf("[%s](%s)", text, directive)
+}
+
+func convertSmdLinkedImage(match string) string {
+	parts := smdLinkedImageRe.FindStringSubmatch(match)
+	if parts == nil {
+		return match
+	}
+	caption := parts[1]
+	imgExpr := parts[2]
+	linkExpr := parts[3]
+	// Parse image URL from $image.* calls
+	_, imgCalls := parseDirectiveCalls(imgExpr)
+	imgURL := ""
+	imgAlt := ""
+	for _, c := range imgCalls {
+		switch c.function {
+		case "url", "asset", "siteAsset", "buildAsset":
+			if len(c.args) > 0 {
+				imgURL = unquote(c.args[0])
+			}
+		case "alt":
+			if len(c.args) > 0 {
+				imgAlt = unquote(c.args[0])
+			}
+		}
+	}
+	_, linkCalls := parseDirectiveCalls(linkExpr)
+	linkURL := ""
+	for _, c := range linkCalls {
+		switch c.function {
+		case "url":
+			if len(c.args) > 0 {
+				linkURL = unquote(c.args[0])
+			}
+		case "ref":
+			if len(c.args) > 0 {
+				linkURL = "#" + unquote(c.args[0])
+			}
+		case "page":
+			if len(c.args) > 0 {
+				linkURL = "/" + unquote(c.args[0])
+			}
+		case "sub":
+			if len(c.args) > 0 {
+				linkURL = "./" + unquote(c.args[0])
+			}
+		case "sibling":
+			if len(c.args) > 0 {
+				linkURL = unquote(c.args[0])
+			}
+		case "site":
+			linkURL = "/"
+		}
+	}
+	if imgURL == "" || linkURL == "" {
+		return match
+	}
+	if imgAlt != "" {
+		return fmt.Sprintf("[![%s](%s %q)](%s)", caption, imgURL, imgAlt, linkURL)
+	}
+	return fmt.Sprintf("[![%s](%s)](%s)", caption, imgURL, linkURL)
+}
+
+func fixLegacyLinkedImage(match string) string {
+	parts := smdLinkedImageLegacyRe.FindStringSubmatch(match)
+	if parts == nil {
+		return match
+	}
+	caption := parts[1]
+	imgExpr := parts[2]
+	rawURL := parts[3]
+	linkDirective := classifyLinkURL(rawURL)
+	return fmt.Sprintf("[[%s](%s)](%s)", caption, imgExpr, linkDirective)
+}
+
+func convertSmdLegacyLinkedImage(match string) string {
+	parts := smdLinkedImageLegacyRe.FindStringSubmatch(match)
+	if parts == nil {
+		return match
+	}
+	caption := parts[1]
+	imgExpr := parts[2]
+	rawURL := parts[3]
+	_, imgCalls := parseDirectiveCalls(imgExpr)
+	imgURL := ""
+	imgAlt := ""
+	for _, c := range imgCalls {
+		switch c.function {
+		case "url", "asset", "siteAsset", "buildAsset":
+			if len(c.args) > 0 {
+				imgURL = unquote(c.args[0])
+			}
+		case "alt":
+			if len(c.args) > 0 {
+				imgAlt = unquote(c.args[0])
+			}
+		}
+	}
+	if imgURL == "" {
+		return match
+	}
+	if imgAlt != "" {
+		return fmt.Sprintf("[![%s](%s %q)](%s)", caption, imgURL, imgAlt, rawURL)
+	}
+	return fmt.Sprintf("[![%s](%s)](%s)", caption, imgURL, rawURL)
 }
 func findMatchingParen(s string, start int) int {
 	if start >= len(s) || s[start] != '(' {
@@ -774,6 +904,15 @@ func convertSmdLinkExpr(text string, calls []directiveCall) string {
 	return fmt.Sprintf("[%s](%s)", text, url)
 }
 func smdToMdConvert(input string) string {
+	// Handle legacy broken linked images even if they contain $ only in image part
+	// Legacy: [[cap]($image...)](https://...) -> [![cap](img)](https://...)
+	input = smdLinkedImageLegacyRe.ReplaceAllStringFunc(input, convertSmdLegacyLinkedImage)
+	if !strings.Contains(input, "(") || !strings.Contains(input, "$") {
+		return input
+	}
+	// Handle linked images first: [[caption]($image...)]($link...) -> [![caption](url)](url)
+	// This must run before the generic single-directive conversion.
+	input = smdLinkedImageRe.ReplaceAllStringFunc(input, convertSmdLinkedImage)
 	if !strings.Contains(input, "(") || !strings.Contains(input, "$") {
 		return input
 	}
@@ -1022,6 +1161,9 @@ func MdToSmd(input string) (string, error) {
 	processed = handleInlineHtml(processed)
 	processed = normalizeThematicBreaks(processed)
 	processed = normalizeHeadings(processed)
+	// Linked images must be handled before standalone images/links to avoid
+	// partial conversion: [![alt](img)](link) -> [[alt]($image...)]($link...)
+	processed = linkedImageRe.ReplaceAllStringFunc(processed, convertLinkedImage)
 	processed = imageRe.ReplaceAllStringFunc(processed, convertImage)
 	processed = linkRe.ReplaceAllStringFunc(processed, convertLink)
 	// Second pass: catch HTML comments that survived due to link conversion inside them
@@ -1046,6 +1188,8 @@ func RepairSmdContent(input string) (string, error) {
 	processed = handleInlineHtml(processed)
 	processed = normalizeThematicBreaks(processed)
 	processed = normalizeHeadings(processed)
+	// Fix legacy broken linked images: [[cap]($image...)](https://...) -> [[cap]($image...)]($link...)
+	processed = smdLinkedImageLegacyRe.ReplaceAllStringFunc(processed, fixLegacyLinkedImage)
 	// Second pass strip after handling
 	processed = stripHtmlComments(processed)
 	processed = regexp.MustCompile("(?m)^```=html\\n\\s*\\n```\\n?").ReplaceAllString(processed, "")
