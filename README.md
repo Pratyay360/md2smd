@@ -7,16 +7,14 @@ specially made this to aid myself while writing content using [frontmatter](http
 as there is no direct smd compatible editor yet. and frontmatter is the easiest
 standard to manage content.
 
-btw .. i have tried replicating the specs as accurately as possible ..
+btw .. i have tried replicating the specs as accurately as possible,
 
 ```
 if you are facing any issues
      kindly raise a pr ...:)
+````
 ```
-
-# demo video for reference.
-
-[![asciicast](https://asciinema.org/a/raWocUFrFrJbc5vV.svg)](https://asciinema.org/a/raWocUFrFrJbc5vV)
+```
 
 ## knowledgebase
 

@@ -26,6 +26,8 @@ var (
 	smdLinkedImageRe  = regexp.MustCompile(`\[\[([^\]]*)\]\((` + `\$image\.(?:url|asset|siteAsset|buildAsset)\("[^"]*"\)(?:\.alt\("[^"]*"\))?` + `)\)\]\((` + `\$link\.(?:url|ref|page|sub|sibling|site)(?:\("[^"]*"\))?(?:\.[a-zA-Z_]+\([^\)]*\))*` + `)\)`)
 	// Legacy broken linked image where outer URL is still raw http(s)://... after a previous buggy conversion
 	smdLinkedImageLegacyRe = regexp.MustCompile(`\[\[([^\]]*)\]\((` + `\$image\.(?:url|asset|siteAsset|buildAsset)\("[^"]*"\)(?:\.alt\("[^"]*"\))?` + `)\)\]\((https?://[^\s)]+)\)`)
+	// =html linked image: ```=html\n<a href="..."...><img src="..."...></a>\n```
+	htmlLinkedImageRe = regexp.MustCompile(`(?s)` + "```" + `=html\n\s*<a\s+href="([^"]*?)"([^>]*)>\s*<img\s+src="([^"]*?)"([^>]*?)>\s*</a>\s*\n` + "```")
 )
 func mapToZiggy(data map[string]interface{}, prefix string) string {
 	keys := make([]string, 0, len(data))
@@ -546,13 +548,18 @@ func convertLinkedImage(match string) string {
 	imgAlt := parts[3]
 	linkURL := parts[4]
 	// linkTitle parts[5] ignored, no Smd equivalent for title on links yet
-	imgDirective := classifyImageURL(imgURL)
+	//
+	// Zine does not support nested directives like [[cap]($image...)]($link...).
+	// Instead, emit an =html code block with a proper <a><img></a> structure.
+	altAttr := ""
 	if imgAlt != "" {
-		imgDirective += fmt.Sprintf(".alt(%q)", imgAlt)
+		altAttr = fmt.Sprintf(" alt=%q", imgAlt)
 	}
-	linkDirective := classifyLinkURL(linkURL)
-	// Nested: image inside link -> [[caption]($image...)]($link...)
-	return fmt.Sprintf("[[%s](%s)](%s)", caption, imgDirective, linkDirective)
+	captionAttr := ""
+	if caption != "" {
+		captionAttr = fmt.Sprintf(" title=%q", caption)
+	}
+	return fmt.Sprintf("```=html\n<a href=%q%s><img src=%q%s></a>\n```", linkURL, captionAttr, imgURL, altAttr)
 }
 
 func convertImage(match string) string {
@@ -654,6 +661,36 @@ func fixLegacyLinkedImage(match string) string {
 	rawURL := parts[3]
 	linkDirective := classifyLinkURL(rawURL)
 	return fmt.Sprintf("[[%s](%s)](%s)", caption, imgExpr, linkDirective)
+}
+
+func convertHtmlLinkedImage(match string) string {
+	parts := htmlLinkedImageRe.FindStringSubmatch(match)
+	if parts == nil {
+		return match
+	}
+	linkURL := parts[1]
+	// parts[2] = extra attributes on <a> (e.g., title)
+	imgURL := parts[3]
+	// parts[4] = extra attributes on <img> (e.g., alt)
+	// Extract title from <a> tag
+	title := ""
+	aAttrs := parts[2]
+	if titleMatch := regexp.MustCompile(`title="([^"]*?)"`).FindStringSubmatch(aAttrs); titleMatch != nil {
+		title = titleMatch[1]
+	}
+	// Extract alt from <img> tag
+	alt := ""
+	imgAttrs := parts[4]
+	if altMatch := regexp.MustCompile(`alt="([^"]*?)"`).FindStringSubmatch(imgAttrs); altMatch != nil {
+		alt = altMatch[1]
+	}
+	if alt != "" {
+		return fmt.Sprintf("[![%s](%s %q)](%s)", title, imgURL, alt, linkURL)
+	}
+	if title != "" {
+		return fmt.Sprintf("[![%s](%s)](%s)", title, imgURL, linkURL)
+	}
+	return fmt.Sprintf("![](%s)", imgURL)
 }
 
 func convertSmdLegacyLinkedImage(match string) string {
@@ -1222,6 +1259,8 @@ func SmdToMd(input string) (string, error) {
 	processed, blocks := extractFencedBlocks(rest)
 	processed = smdToMdConvert(processed)
 	processed = restoreBlocks(processed, blocks)
+	// Convert =html linked images back to markdown syntax
+	processed = htmlLinkedImageRe.ReplaceAllStringFunc(processed, convertHtmlLinkedImage)
 	if mdFM != "" {
 		mdFM = "---\n" + mdFM + "---\n"
 	}
