@@ -551,13 +551,20 @@ func convertLinkedImage(match string) string {
 	//
 	// Zine does not support nested directives like [[cap]($image...)]($link...).
 	// Instead, emit an =html code block with a proper <a><img></a> structure.
-	altAttr := ""
-	if imgAlt != "" {
-		altAttr = fmt.Sprintf(" alt=%q", imgAlt)
+	// caption is the markdown image alt text -> must become <img alt="..."> to satisfy html validator
+	altText := caption
+	if altText == "" {
+		altText = imgAlt
 	}
+	if altText == "" {
+		altText = "asciicast"
+	}
+	altAttr := fmt.Sprintf(" alt=%q", altText)
 	captionAttr := ""
 	if caption != "" {
 		captionAttr = fmt.Sprintf(" title=%q", caption)
+	} else if imgAlt != "" {
+		captionAttr = fmt.Sprintf(" title=%q", imgAlt)
 	}
 	return fmt.Sprintf("```=html\n<a href=%q%s><img src=%q%s></a>\n```", linkURL, captionAttr, imgURL, altAttr)
 }
