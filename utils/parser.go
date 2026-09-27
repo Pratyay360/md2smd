@@ -23,6 +23,17 @@ var (
 	smdLinkedImageLegacyRe = regexp.MustCompile(`\[\[([^\]]*)\]\((` + `\$image\.(?:url|asset|siteAsset|buildAsset)\("[^"]*"\)(?:\.alt\("[^"]*"\))?` + `)\)\]\((https?://[^\s)]+)\)`)
 	// =html linked image: ```=html\n<a href="..."...><img src="..."...></a>\n```
 	htmlLinkedImageRe = regexp.MustCompile(`(?s)` + "```" + `=html\n\s*<a\s+href="([^"]*?)"([^>]*)>\s*<img\s+src="([^"]*?)"([^>]*?)>\s*</a>\s*\n` + "```")
+	// Asciinema terminal recordings ("footage") are published as a badge image
+	// that links to the player page. Both shapes become the official player
+	// embed, which is the only form Zine accepts (validated =html code block).
+	asciinemaHost = `asciinema\.org/a/`
+	asciinemaID   = `[A-Za-z0-9_-]+`
+	// [![asciicast](https://asciinema.org/a/ID.svg)](https://asciinema.org/a/ID)
+	linkedAsciinemaRe = regexp.MustCompile(`\[!\[[^\]]*\]\(\s*https?://` + asciinemaHost + asciinemaID + `(?:\.svg)?\s*(?:"[^"]*")?\)\]\(\s*https?://` + asciinemaHost + asciinemaID + `\s*\)`)
+	// ![asciicast](https://asciinema.org/a/ID.svg)
+	asciinemaImageRe = regexp.MustCompile(`!\[[^\]]*\]\(\s*https?://` + asciinemaHost + `(` + asciinemaID + `)(?:\.svg)?\s*(?:"[^"]*")?\)`)
+	// Reverse: the =html player embed back to the badge markdown form.
+	htmlAsciinemaRe = regexp.MustCompile(`(?s)` + "```" + `=html\s*<script\s+src="https?://` + asciinemaHost + `(` + asciinemaID + `)\.js"[^>]*>\s*</script>\s*` + "```")
 )
 
 func mapToZiggy(data map[string]interface{}, prefix string) string {
@@ -385,6 +396,49 @@ func classifyLinkURL(url string) string {
 	}
 	return fmt.Sprintf("$link.sibling(%q)", url)
 }
+
+// asciinemaEmbed renders an asciinema cast as its official player embed.
+// SuperMD forbids inline HTML, so the <script> tag has to travel inside a
+// =html code block, which Zine validates and inlines into the page.
+func asciinemaEmbed(castID string) string {
+	return fmt.Sprintf("```=html\n<script src=\"https://asciinema.org/a/%s.js\" id=\"asciicast-%s\" async></script>\n```", castID, castID)
+}
+
+// convertAsciinema turns asciinema footage (badge image, optionally wrapped in
+// a link to the player page) into the playable embed.
+func convertAsciinema(input string) string {
+	input = linkedAsciinemaRe.ReplaceAllStringFunc(input, func(match string) string {
+		return asciinemaEmbed(extractCastID(match))
+	})
+	return asciinemaImageRe.ReplaceAllStringFunc(input, func(match string) string {
+		loc := asciinemaImageRe.FindStringSubmatch(match)
+		if loc == nil {
+			return match
+		}
+		return asciinemaEmbed(loc[1])
+	})
+}
+
+// extractCastID pulls the cast id out of any asciinema URL variant.
+func extractCastID(url string) string {
+	if loc := regexp.MustCompile(asciinemaHost + `(` + asciinemaID + `)`).FindStringSubmatch(url); loc != nil {
+		return loc[1]
+	}
+	return ""
+}
+
+// convertAsciinemaToMd restores the badge markdown from a player embed.
+func convertAsciinemaToMd(input string) string {
+	return htmlAsciinemaRe.ReplaceAllStringFunc(input, func(match string) string {
+		loc := htmlAsciinemaRe.FindStringSubmatch(match)
+		if loc == nil {
+			return match
+		}
+		id := loc[1]
+		return fmt.Sprintf("[![asciicast](https://asciinema.org/a/%s.svg)](https://asciinema.org/a/%s)", id, id)
+	})
+}
+
 func convertLinkedImage(match string) string {
 	parts := linkedImageRe.FindStringSubmatch(match)
 	if parts == nil {
@@ -404,7 +458,7 @@ func convertLinkedImage(match string) string {
 		altText = imgAlt
 	}
 	if altText == "" {
-		altText = "asciicast"
+		altText = "image"
 	}
 	altAttr := fmt.Sprintf(" alt=%q", altText)
 	captionAttr := ""
@@ -899,6 +953,9 @@ func MdToSmd(input string) (string, error) {
 		smdFM = mapToZiggy(matter, "")
 	}
 	processed, blocks := extractFencedBlocks(string(body))
+	// Asciinema footage first: the badge is linked-image syntax that would
+	// otherwise be flattened into a static <a><img> badge by convertLinkedImage.
+	processed = convertAsciinema(processed)
 	// Linked images must be handled before standalone images/links to avoid
 	// partial conversion: [![alt](img)](link) -> [[alt]($image...)]($link...)
 	processed = linkedImageRe.ReplaceAllStringFunc(processed, convertLinkedImage)
@@ -926,6 +983,8 @@ func SmdToMd(input string) (string, error) {
 	processed = restoreBlocks(processed, blocks)
 	// Convert =html linked images back to markdown syntax
 	processed = htmlLinkedImageRe.ReplaceAllStringFunc(processed, convertHtmlLinkedImage)
+	// Convert the asciinema player embed back to the badge markdown
+	processed = convertAsciinemaToMd(processed)
 	if mdFM != "" {
 		mdFM = "---\n" + mdFM + "---\n"
 	}
