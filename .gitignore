@@ -1,2 +1,4 @@
-test/
-test.smd
+test/*
+.commandcode/taste/
+# Added by goreleaser init:
+dist/

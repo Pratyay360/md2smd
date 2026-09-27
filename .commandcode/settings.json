@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Shell(ls -a; ls -R .github 2>/dev/null; git remote -v; git tag | tail -5)",
+      "Shell(goreleaser:*)",
+      "Shell(rm:*)"
+    ],
+    "deny": [],
+    "defaultMode": "default"
+  }
+}
