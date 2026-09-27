@@ -115,6 +115,8 @@ func MdToSmd(input string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	matter = normalizeFrontmatter(matter)
+	ensureTitle(matter, body)
 	var smdFM string
 	if len(matter) > 0 {
 		smdFM = "---\n" + mapToZiggy(matter, "") + "---\n"
@@ -124,6 +126,10 @@ func MdToSmd(input string) (string, error) {
 	processed = linkedImageRe.ReplaceAllStringFunc(processed, convertLinkedImage)
 	processed = imageRe.ReplaceAllStringFunc(processed, convertImage)
 	processed = linkRe.ReplaceAllStringFunc(processed, convertLink)
+	// Zine rejects documents whose first heading is not '#' and any jump
+	// that skips a level, so shift/clamp headings (code blocks excluded via
+	// the placeholders above).
+	processed = normalizeHeadings(processed)
 	processed = restoreBlocks(processed, blocks)
 	return smdFM + processed, nil
 }

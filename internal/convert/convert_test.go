@@ -3,6 +3,7 @@ package convert
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -43,8 +44,17 @@ func TestFileWritesSibling(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := "# Hi\n\n[a]($image.asset(\"b.png\"))\n"; string(data) != want {
-		t.Errorf("content = %q, want %q", data, want)
+	// Every .smd must carry Zine-mandatory frontmatter, so the body is
+	// checked as a suffix and the frontmatter for its required fields.
+	content := string(data)
+	wantBody := "# Hi\n\n[a]($image.asset(\"b.png\"))\n"
+	if !strings.HasSuffix(content, wantBody) {
+		t.Errorf("content body = %q, want suffix %q (full %q)", content, wantBody, content)
+	}
+	for _, want := range []string{".title = \"Hi\"", ".date =", ".layout ="} {
+		if !strings.Contains(content, want) {
+			t.Errorf("content missing %q (full %q)", want, content)
+		}
 	}
 }
 
