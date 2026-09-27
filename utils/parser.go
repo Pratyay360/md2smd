@@ -1,4 +1,5 @@
 package utils
+
 import (
 	"fmt"
 	"regexp"
@@ -9,26 +10,21 @@ import (
 	"github.com/adrg/frontmatter"
 	"gopkg.in/yaml.v3"
 )
+
 var (
-	linkedImageRe     = regexp.MustCompile(`\[!\[([^\]]*)\]\(([^\s)]+)(?:\s+"([^"]*)")?\)\]\(([^\s)]+)(?:\s+"([^"]*)")?\)`)
-	imageRe           = regexp.MustCompile(`!\[([^\]]*)\]\(([^\s)]+)(?:\s+"([^"]*)")?\)`)
-	linkRe            = regexp.MustCompile(`\[([^\]]+)\]\(([^\s)]+)(?:\s+"([^"]*)")?\)`)
-	smdDirectiveRe    = regexp.MustCompile(`\[([^\]]*)\]\(`)
-	htmlCommentRe     = regexp.MustCompile(`(?s)<!--.*?-->`)
-	headingRe         = regexp.MustCompile(`(?m)^(\s{0,3})(#{1,6})(\s)`)
-	mdxImportRe       = regexp.MustCompile(`(?m)^\s*(import|export)\s+.*$`)
-	htmlTagRe         = regexp.MustCompile(`<[^>]+>`)
-	htmlLineRe        = regexp.MustCompile(`(?m)^\s*<[^>]+>\s*$`)
-	hrRe              = regexp.MustCompile(`(?m)^\s*([-*_][ \t]*){3,}\s*$`)
-	longDashFMRe      = regexp.MustCompile(`\A\s*-{5,}\s*\n([\s\S]*?)\n\s*-{5,}\s*\n`)
-	imageExprPat      = `\$image\.(?:url|asset|siteAsset|buildAsset)\("[^"]*"\)(?:\.alt\("[^"]*"\))?`
-	linkExprPat       = `\$link\.(?:url|ref|page|sub|sibling|site)(?:\("[^"]*"\))?(?:\.[a-zA-Z_]+\([^\)]*\))*`
-	smdLinkedImageRe  = regexp.MustCompile(`\[\[([^\]]*)\]\((` + `\$image\.(?:url|asset|siteAsset|buildAsset)\("[^"]*"\)(?:\.alt\("[^"]*"\))?` + `)\)\]\((` + `\$link\.(?:url|ref|page|sub|sibling|site)(?:\("[^"]*"\))?(?:\.[a-zA-Z_]+\([^\)]*\))*` + `)\)`)
+	linkedImageRe    = regexp.MustCompile(`\[!\[([^\]]*)\]\(([^\s)]+)(?:\s+"([^"]*)")?\)\]\(([^\s)]+)(?:\s+"([^"]*)")?\)`)
+	imageRe          = regexp.MustCompile(`!\[([^\]]*)\]\(([^\s)]+)(?:\s+"([^"]*)")?\)`)
+	linkRe           = regexp.MustCompile(`\[([^\]]+)\]\(([^\s)]+)(?:\s+"([^"]*)")?\)`)
+	smdDirectiveRe   = regexp.MustCompile(`\[([^\]]*)\]\(`)
+	imageExprPat     = `\$image\.(?:url|asset|siteAsset|buildAsset)\("[^"]*"\)(?:\.alt\("[^"]*"\))?`
+	linkExprPat      = `\$link\.(?:url|ref|page|sub|sibling|site)(?:\("[^"]*"\))?(?:\.[a-zA-Z_]+\([^\)]*\))*`
+	smdLinkedImageRe = regexp.MustCompile(`\[\[([^\]]*)\]\((` + `\$image\.(?:url|asset|siteAsset|buildAsset)\("[^"]*"\)(?:\.alt\("[^"]*"\))?` + `)\)\]\((` + `\$link\.(?:url|ref|page|sub|sibling|site)(?:\("[^"]*"\))?(?:\.[a-zA-Z_]+\([^\)]*\))*` + `)\)`)
 	// Legacy broken linked image where outer URL is still raw http(s)://... after a previous buggy conversion
 	smdLinkedImageLegacyRe = regexp.MustCompile(`\[\[([^\]]*)\]\((` + `\$image\.(?:url|asset|siteAsset|buildAsset)\("[^"]*"\)(?:\.alt\("[^"]*"\))?` + `)\)\]\((https?://[^\s)]+)\)`)
 	// =html linked image: ```=html\n<a href="..."...><img src="..."...></a>\n```
 	htmlLinkedImageRe = regexp.MustCompile(`(?s)` + "```" + `=html\n\s*<a\s+href="([^"]*?)"([^>]*)>\s*<img\s+src="([^"]*?)"([^>]*?)>\s*</a>\s*\n` + "```")
 )
+
 func mapToZiggy(data map[string]interface{}, prefix string) string {
 	keys := make([]string, 0, len(data))
 	for k := range data {
@@ -175,7 +171,7 @@ func ziggyToMap(ziggy string) map[string]interface{} {
 		}
 		line = strings.TrimSuffix(line, ",")
 		line = strings.TrimSuffix(line, ";")
-		line = strings.TrimPrefix(line, ".") 
+		line = strings.TrimPrefix(line, ".")
 		if line == "" {
 			continue
 		}
@@ -183,7 +179,7 @@ func ziggyToMap(ziggy string) map[string]interface{} {
 		if parts == nil {
 			continue
 		}
-		keys := strings.Split(parts[0], ".") 
+		keys := strings.Split(parts[0], ".")
 		setNestedValue(data, keys, parseZiggyValue(parts[1]))
 	}
 	return data
@@ -364,155 +360,6 @@ func restoreBlocks(input string, blocks map[string]string) string {
 		input = strings.ReplaceAll(input, placeholder, block)
 	}
 	return input
-}
-func stripHtmlComments(input string) string {
-	return htmlCommentRe.ReplaceAllString(input, "")
-}
-func stripMdxImports(input string) string {
-	return mdxImportRe.ReplaceAllString(input, "")
-}
-func normalizeThematicBreaks(input string) string {
-	// SuperMD via cmark-gfm is strict about thematic breaks: Zine reports
-	// "unexpected token" for ---- / ----- etc. Normalize any HR to exactly "---"
-	// while preserving code fences (already extracted).
-	return hrRe.ReplaceAllString(input, "---")
-}
-func sanitizeZiggyValue(v interface{}) interface{} {
-	// Zine's Page schema only allows specific fields; unknown top-level keys
-	// from generic markdown frontmatter (e.g., cover, summary, content_meta)
-	// would be ignored or cause errors. Keep only allowed keys + custom fields
-	// that are safe. For super compatibility, we keep all but ensure they are
-	// serializable; Zine will ignore unknown via custom? To be safe, filter.
-	// For now, keep all – Zine allows extra via ? fields? But we ensure
-	// required fields exist.
-	return v
-}
-func handleInlineHtml(input string) string {
-	// SuperMD forbids inline HTML. To support any MD/MDX flavour (including JSX),
-	// we need to make the output valid. Two strategies:
-	// - Standalone HTML/JSX block lines (e.g., <div> or <MyComponent />) -> wrap in =html code block (SuperMD escape hatch)
-	// - Inline HTML mixed with markdown text -> escape to &lt;/&gt;
-	// We handle multi-line HTML blocks by collecting consecutive HTML-tag lines
-	// and wrapping the whole block in a single =html fence to preserve structure.
-	lines := strings.Split(input, "\n")
-	var out []string
-	i := 0
-	for i < len(lines) {
-		line := lines[i]
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" {
-			out = append(out, line)
-			i++
-			continue
-		}
-		if htmlLineRe.MatchString(line) {
-			// Collect consecutive HTML-only lines (including blank lines between) as one block
-			// to handle cases like <div>\n  content\n</div> where inner content is not pure HTML
-			// but part of the block. Heuristic: gather until we find a line that is not HTML-only
-			// and not empty, or until closing tag.
-			blockLines := []string{trimmed}
-			j := i + 1
-			// If opening tag without closing on same line, collect until closing tag
-			isOpeningBlock := !strings.HasPrefix(trimmed, "</") && !strings.HasSuffix(trimmed, "/>") && strings.HasPrefix(trimmed, "<")
-			if isOpeningBlock {
-				for j < len(lines) {
-					nextTrimmed := strings.TrimSpace(lines[j])
-					if nextTrimmed == "" {
-						blockLines = append(blockLines, lines[j])
-						j++
-						continue
-					}
-					if htmlLineRe.MatchString(lines[j]) || nextTrimmed == "" {
-						blockLines = append(blockLines, nextTrimmed)
-						j++
-						// Stop at closing tag
-						if strings.HasPrefix(nextTrimmed, "</") {
-							break
-						}
-						continue
-					}
-					// Content inside block (e.g., "Block html") - include in block
-					if j == i+1 {
-						// Include one content line if directly after opening
-						blockLines = append(blockLines, lines[j])
-						j++
-						// Check if next is closing
-						if j < len(lines) && htmlLineRe.MatchString(lines[j]) {
-							blockLines = append(blockLines, strings.TrimSpace(lines[j]))
-							j++
-						}
-					}
-					break
-				}
-				// If we collected more than one line, wrap as single =html block
-				if len(blockLines) > 1 {
-					out = append(out, "```=html")
-					out = append(out, blockLines...)
-					out = append(out, "```")
-					i = j
-					continue
-				}
-			}
-			// Single HTML line -> wrap individually
-			out = append(out, "```=html")
-			out = append(out, trimmed)
-			out = append(out, "```")
-			i++
-			continue
-		}
-		if htmlTagRe.MatchString(line) {
-			line = htmlTagRe.ReplaceAllStringFunc(line, func(m string) string {
-				return strings.ReplaceAll(strings.ReplaceAll(m, "<", "&lt;"), ">", "&gt;")
-			})
-		}
-		out = append(out, line)
-		i++
-	}
-	return strings.Join(out, "\n")
-}
-func normalizeHeadings(input string) string {
-	matches := headingRe.FindAllStringSubmatch(input, -1)
-	if len(matches) == 0 {
-		return input
-	}
-	minLevel := 7
-	for _, m := range matches {
-		level := len(m[2])
-		if level < minLevel {
-			minLevel = level
-		}
-	}
-	offset := 0
-	if minLevel > 1 {
-		offset = minLevel - 1
-	}
-	lines := strings.Split(input, "\n")
-	prevLevel := 0
-	for i, line := range lines {
-		loc := headingRe.FindStringSubmatchIndex(line)
-		if loc == nil {
-			continue
-		}
-		hashes := line[loc[4]:loc[5]]
-		level := len(hashes)
-		newLevel := level - offset
-		if newLevel < 1 {
-			newLevel = 1
-		}
-		if newLevel > 6 {
-			newLevel = 6
-		}
-		if prevLevel != 0 && newLevel > prevLevel+1 {
-			newLevel = prevLevel + 1
-		}
-		if newLevel != level {
-			indent := line[loc[2]:loc[3]]
-			rest := line[loc[5]:]
-			lines[i] = indent + strings.Repeat("#", newLevel) + rest
-		}
-		prevLevel = newLevel
-	}
-	return strings.Join(lines, "\n")
 }
 func classifyImageURL(url string) string {
 	if strings.HasPrefix(url, "http://") || strings.HasPrefix(url, "https://") {
@@ -761,10 +608,12 @@ func findMatchingParen(s string, start int) int {
 	}
 	return -1
 }
+
 type directiveCall struct {
 	function string
 	args     []string
 }
+
 func parseDirectiveCalls(expr string) (string, []directiveCall) {
 	expr = strings.TrimSpace(expr)
 	if !strings.HasPrefix(expr, "$") {
@@ -995,149 +844,6 @@ func smdToMdConvert(input string) string {
 	}
 	return result.String()
 }
-func inferTitleFromBody(body string) string {
-	for _, line := range strings.Split(body, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		// Match any heading level (#..######) as title fallback
-		loc := headingRe.FindStringSubmatchIndex(line)
-		if loc != nil {
-			title := strings.TrimSpace(line[loc[5]:])
-			title = strings.Trim(title, "*_` ")
-			if title != "" {
-				return title
-			}
-		}
-		// Also handle setext? not needed
-	}
-	return ""
-}
-
-func sanitizeMatter(matter map[string]interface{}, body string) map[string]interface{} {
-	if matter == nil {
-		matter = make(map[string]interface{})
-	}
-	// Whitelist of allowed top-level Page fields in Zine's .smd.ziggy-schema
-	allowed := map[string]bool{
-		"title":               true,
-		"description":         true,
-		"date":                true,
-		"authors":             true,
-		"author":              true, // alias, will be normalized to authors
-		"tags":                true,
-		"layout":              true,
-		"aliases":             true,
-		"alternatives":        true,
-		"translation_key":     true,
-		"draft":               true,
-		"forbid_subsections":  true,
-		"custom":              true,
-	}
-	// Normalize author -> authors
-	if v, ok := matter["author"]; ok {
-		if _, has := matter["authors"]; !has {
-			matter["authors"] = v
-		}
-		delete(matter, "author")
-	}
-	// For super compatibility, drop unknown top-level fields that are not in
-	// Zine's Page schema (e.g., cover, summary, image, content_meta).
-	// Previously we tried to move them into `custom`, but nested custom
-	// structures produce invalid Ziggy (` .custom.content_meta.trending`)
-	// resulting in "missing token" errors. Dropping is safest for builds.
-	for k := range matter {
-		if !allowed[k] {
-			delete(matter, k)
-		}
-	}
-	// Ensure custom, if present, is a simple map[string]interface{} or drop it
-	if c, ok := matter["custom"]; ok {
-		if _, ok := c.(map[string]interface{}); !ok {
-			if _, ok2 := c.(map[interface{}]interface{}); !ok2 {
-				delete(matter, "custom")
-			}
-		}
-	}
-	// Ensure required fields with sensible defaults
-	if _, ok := matter["title"]; !ok {
-		title := inferTitleFromBody(body)
-		if title == "" {
-			title = "Untitled"
-		}
-		matter["title"] = title
-	}
-	if _, ok := matter["date"]; !ok {
-		matter["date"] = time.Now().Format("2006-01-02")
-	}
-	if _, ok := matter["layout"]; !ok {
-		// Heuristic: files named index.* are section pages
-		matter["layout"] = "post.shtml"
-	}
-	if _, ok := matter["draft"]; !ok {
-		matter["draft"] = false
-	}
-	return matter
-}
-
-func tryParseLongDashFrontmatter(body string, matter map[string]interface{}) (map[string]interface{}, string, bool) {
-	bodyTrim := strings.TrimLeft(body, "\n\r\t ")
-	if !strings.HasPrefix(bodyTrim, "----") {
-		return matter, body, false
-	}
-	// Try to match long dash frontmatter at start
-	loc := longDashFMRe.FindStringSubmatchIndex(bodyTrim)
-	if loc == nil {
-		return matter, body, false
-	}
-	inner := bodyTrim[loc[2]:loc[3]]
-	rest := bodyTrim[loc[1]:]
-	// Try YAML parse of inner
-	var parsed map[string]interface{}
-	if err := yaml.Unmarshal([]byte(inner), &parsed); err == nil && len(parsed) > 0 {
-		// Merge into matter
-		if matter == nil {
-			matter = make(map[string]interface{})
-		}
-		for k, v := range parsed {
-			matter[k] = v
-		}
-		return matter, rest, true
-	}
-	// Fallback: simple key: value parsing
-	parsed = make(map[string]interface{})
-	for _, line := range strings.Split(inner, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		sep := strings.Index(line, ":")
-		if sep < 0 {
-			continue
-		}
-		k := strings.TrimSpace(line[:sep])
-		v := strings.TrimSpace(line[sep+1:])
-		if k == "" {
-			continue
-		}
-		// Handle nested menu etc. - keep as string for now
-		parsed[k] = v
-	}
-	if len(parsed) > 0 {
-		if matter == nil {
-			matter = make(map[string]interface{})
-		}
-		for k, v := range parsed {
-			if _, exists := matter[k]; !exists {
-				matter[k] = v
-			}
-		}
-		return matter, rest, true
-	}
-	return matter, body, false
-}
-
 func MdToSmd(input string) (string, error) {
 	r := strings.NewReader(input)
 	var matter map[string]interface{}
@@ -1188,69 +894,21 @@ func MdToSmd(input string) (string, error) {
 			return "", fmt.Errorf("parsing frontmatter: %w", err)
 		}
 	}
-	// Handle custom long-dash frontmatter (casual-markdown style) if YAML frontmatter not found
-	if len(matter) == 0 {
-		if newMatter, rest, ok := tryParseLongDashFrontmatter(string(body), matter); ok {
-			matter = newMatter
-			body = []byte(rest)
-		}
-	}
-	// Super compatible: ensure frontmatter always has required fields
-	matter = sanitizeMatter(matter, string(body))
 	var smdFM string
-	smdFM = mapToZiggy(matter, "")
+	if len(matter) > 0 {
+		smdFM = mapToZiggy(matter, "")
+	}
 	processed, blocks := extractFencedBlocks(string(body))
-	processed = stripMdxImports(processed)
-	processed = stripHtmlComments(processed)
-	processed = handleInlineHtml(processed)
-	processed = normalizeThematicBreaks(processed)
-	processed = normalizeHeadings(processed)
 	// Linked images must be handled before standalone images/links to avoid
 	// partial conversion: [![alt](img)](link) -> [[alt]($image...)]($link...)
 	processed = linkedImageRe.ReplaceAllStringFunc(processed, convertLinkedImage)
 	processed = imageRe.ReplaceAllStringFunc(processed, convertImage)
 	processed = linkRe.ReplaceAllStringFunc(processed, convertLink)
-	// Second pass: catch HTML comments that survived due to link conversion inside them
-	// or comments that were wrapped in =html but should be stripped entirely.
-	processed = stripHtmlComments(processed)
-	// Remove any remaining =html blocks that only contained a comment (now empty)
-	processed = regexp.MustCompile("(?m)^```=html\\n\\s*\\n```\\n?").ReplaceAllString(processed, "")
 	processed = restoreBlocks(processed, blocks)
-	// Collapse excessive blank lines left by stripping (e.g., removed imports/comments)
-	processed = regexp.MustCompile(`\n{3,}`).ReplaceAllString(processed, "\n\n")
-	// Ensure body starts with a heading level 1 if no heading present? Not required
-	smdFM = "---\n" + smdFM + "---\n"
-	return smdFM + processed, nil
-}
-// RepairSmdContent fixes already-generated .smd files in-place: strips HTML comments
-// and normalizes heading levels so the document starts at #1 and never skips.
-func RepairSmdContent(input string) (string, error) {
-	fm, _, rest := extractFrontmatter(input)
-	processed, blocks := extractFencedBlocks(rest)
-	// Strip HTML comments (the "inline html forbidden" error)
-	processed = stripHtmlComments(processed)
-	processed = handleInlineHtml(processed)
-	processed = normalizeThematicBreaks(processed)
-	processed = normalizeHeadings(processed)
-	// Fix legacy broken linked images: [[cap]($image...)](https://...) -> [[cap]($image...)]($link...)
-	processed = smdLinkedImageLegacyRe.ReplaceAllStringFunc(processed, fixLegacyLinkedImage)
-	// Second pass strip after handling
-	processed = stripHtmlComments(processed)
-	processed = regexp.MustCompile("(?m)^```=html\\n\\s*\\n```\\n?").ReplaceAllString(processed, "")
-	processed = restoreBlocks(processed, blocks)
-	processed = regexp.MustCompile(`\n{3,}`).ReplaceAllString(processed, "\n\n")
-	if fm != "" {
-		// Preserve original ziggy frontmatter exactly (trimmed)
-		fmBlock := "---\n" + strings.Trim(fm, "\n") + "\n---\n"
-		// Ensure frontmatter ends with newline
-		if !strings.HasSuffix(fm, "\n") {
-			fmBlock = "---\n" + fm + "\n---\n"
-		}
-		// Re-trim leading newlines from body
-		processed = strings.TrimLeft(processed, "\n")
-		return fmBlock + processed, nil
+	if smdFM != "" {
+		smdFM = "---\n" + smdFM + "---\n"
 	}
-	return processed, nil
+	return smdFM + processed, nil
 }
 
 func SmdToMd(input string) (string, error) {
