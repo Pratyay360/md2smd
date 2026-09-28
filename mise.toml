@@ -5,4 +5,5 @@
 go = "latest"
 "go:github.com/spf13/cobra-cli" = "latest"
 golangci-lint = "latest"
+goreleaser = "latest"
 just = "latest"

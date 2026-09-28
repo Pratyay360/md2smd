@@ -1,2 +1,4 @@
 test/
 test.smd
+# Added by goreleaser init:
+dist/
