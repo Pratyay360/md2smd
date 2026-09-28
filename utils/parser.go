@@ -1,4 +1,5 @@
 package utils
+
 import (
 	"fmt"
 	"regexp"
@@ -377,16 +378,7 @@ func normalizeThematicBreaks(input string) string {
 	// while preserving code fences (already extracted).
 	return hrRe.ReplaceAllString(input, "---")
 }
-func sanitizeZiggyValue(v interface{}) interface{} {
-	// Zine's Page schema only allows specific fields; unknown top-level keys
-	// from generic markdown frontmatter (e.g., cover, summary, content_meta)
-	// would be ignored or cause errors. Keep only allowed keys + custom fields
-	// that are safe. For super compatibility, we keep all but ensure they are
-	// serializable; Zine will ignore unknown via custom? To be safe, filter.
-	// For now, keep all – Zine allows extra via ? fields? But we ensure
-	// required fields exist.
-	return v
-}
+
 func handleInlineHtml(input string) string {
 	// SuperMD forbids inline HTML. To support any MD/MDX flavour (including JSX),
 	// we need to make the output valid. Two strategies:
