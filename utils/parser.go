@@ -29,6 +29,8 @@ var (
 	smdLinkedImageLegacyRe = regexp.MustCompile(`\[\[([^\]]*)\]\((` + `\$image\.(?:url|asset|siteAsset|buildAsset)\("[^"]*"\)(?:\.alt\("[^"]*"\))?` + `)\)\]\((https?://[^\s)]+)\)`)
 	// =html linked image: ```=html\n<a href="..."...><img src="..."...></a>\n```
 	htmlLinkedImageRe = regexp.MustCompile(`(?s)` + "```" + `=html\n\s*<a\s+href="([^"]*?)"([^>]*)>\s*<img\s+src="([^"]*?)"([^>]*?)>\s*</a>\s*\n` + "```")
+	// Any URI scheme (mailto:, tel:, ftp:, etc.) per RFC 3986: ALPHA *( ALPHA / DIGIT / "+" / "-" / "." ) ":"
+	uriSchemeRe = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9+.-]*:`)
 )
 func mapToZiggy(data map[string]interface{}, prefix string) string {
 	keys := make([]string, 0, len(data))
@@ -517,6 +519,21 @@ func classifyImageURL(url string) string {
 }
 func classifyLinkURL(url string) string {
 	if strings.HasPrefix(url, "http://") || strings.HasPrefix(url, "https://") {
+		return fmt.Sprintf("$link.url(%q).new(true)", url)
+	}
+	// Any other absolute URI with a scheme (mailto:, tel:, ftp://, ssh://, etc.)
+	// is an external URL, not an internal page reference. Without this,
+	// e.g. [a](mailto:a@b) would become $link.sibling("mailto:a@b") and Zine
+	// would fail the build with "unknown page".
+	// Network-style URLs (scheme://... or protocol-relative //...) open in a
+	// new tab like http(s); non-hierarchical schemes (mailto:, tel:) do not.
+	if uriSchemeRe.MatchString(url) {
+		if strings.Contains(url, "://") {
+			return fmt.Sprintf("$link.url(%q).new(true)", url)
+		}
+		return fmt.Sprintf("$link.url(%q)", url)
+	}
+	if strings.HasPrefix(url, "//") {
 		return fmt.Sprintf("$link.url(%q).new(true)", url)
 	}
 	if strings.HasPrefix(url, "#") {
